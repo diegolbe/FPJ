@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Fundraising Thermometer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom font import for aesthetics */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Main Application Container -->
+    <div id="app" class="w-full max-w-xl bg-white p-6 md:p-8 rounded-2xl shadow-2xl border-t-8 border-indigo-600 transition-all duration-300">
+
+        <h1 class="text-3xl md:text-4xl font-extrabold text-gray-800 mb-2 text-center">Full Picture Justice Fundraiser</h1>
+        
+
+        <!-- Configuration Notice - Now only shows if the fetch fails -->
+        <div id="config-notice" class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg mb-6 hidden" role="alert">
+            <p class="font-bold">Setup/Data Error</p>
+            <p id="error-message">The application failed to load data. Please ensure your Google Sheet link is correct, set to CSV format, and publicly published.</p>
+        </div>
+
+        <!-- Thermometer Display -->
+        <div class="space-y-4">
+            
+            <!-- Current Total Display -->
+            <div class="flex justify-between items-end">
+                <span id="current-total" class="text-4xl md:text-5xl font-extrabold text-indigo-700">Fetching...</span>
+                <span class="text-xl font-medium text-gray-500">of </span>
+                <span id="goal-total" class="text-3xl font-semibold text-gray-600">$10,000</span>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="w-full h-8 bg-gray-200 rounded-full overflow-hidden shadow-inner">
+                <div id="progress-bar" 
+                     class="h-full bg-indigo-500 rounded-full transition-all duration-1000 ease-out" 
+                     style="width: 0%;">
+                </div>
+            </div>
+
+            <!-- Percentage and Status -->
+            <div class="flex justify-between items-center pt-2">
+                <div class="text-2xl font-bold" id="percentage-text">0% Reached</div>
+                <div class="text-sm font-semibold text-gray-600" id="status-message"></div>
+            </div>
+
+            <div class="text-xs text-gray-400 text-right pt-4">
+                <span id="last-update">Last update: never</span>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        // Use an Immediately Invoked Function Expression (IIFE) to create a local scope
+        (function() {
+            // --- CONFIGURATION ---
+            
+            // 1. Set your fundraising goal here (as a number).
+            const GOAL = 10000; 
+
+            // 2. PASTE THE BASE URL HERE. This should be the URL up to, but NOT including, '/pub?gid=...'
+            // The format MUST be: https://docs.google.com/spreadsheets/d/[YOUR_SHEET_ID] (e.g., stopping before /edit or /pub)
+            // *** CRITICAL STEP: The entire Google Sheet document MUST be set to "Anyone with the link" (Viewer access). ***
+            const BASE_SHEET_URL = "https://docs.google.com/spreadsheets/d/16BxTNEpwnSXEKWxBYbwa7YBcIO636hDci-uODVVHqvE"; 
+            
+            // 3. Set the cell to read the SUM from. (A1 is typically the sum cell)
+            const TARGET_CELL = "A1";
+
+            // Update interval in milliseconds (5 seconds)
+            const UPDATE_INTERVAL = 5000; 
+            
+            // --- DOM ELEMENTS ---
+            const progressBar = document.getElementById('progress-bar');
+            const currentTotalEl = document.getElementById('current-total');
+            const goalTotalEl = document.getElementById('goal-total');
+            const percentageTextEl = document.getElementById('percentage-text');
+            const statusMessageEl = document.getElementById('status-message');
+            const lastUpdateEl = document.getElementById('last-update');
+            const configNoticeEl = document.getElementById('config-notice');
+            const errorMessageEl = document.getElementById('error-message');
+
+            // Initial setup for the Goal
+            goalTotalEl.textContent = formatCurrency(GOAL);
+
+            // NOTE: The previous logic check was faulty and has been removed. 
+            // The app will now proceed directly to fetching data.
+            
+            /**
+             * Formats a number as USD currency.
+             * @param {number} amount
+             * @returns {string} Formatted currency string.
+             */
+            function formatCurrency(amount) {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0 
+                }).format(amount);
+            }
+            
+            /**
+             * Fetches the current total from the Google Sheet URL using the GVIZ endpoint.
+             */
+            async function fetchData() {
+                
+                // Construct the GVIZ URL using string concatenation (+) instead of template literals
+                const GVIZ_URL = BASE_SHEET_URL + "/gviz/tq?tqx=out:csv&range=" + TARGET_CELL;
+                
+                // Add a unique timestamp to ensure no caching (Cache-Busting)
+                const cacheBusterUrl = GVIZ_URL + '&cachebuster=' + new Date().getTime();
+
+                try {
+                    // Fetch the CSV/TSV content using the GVIZ endpoint
+                    const response = await fetch(cacheBusterUrl);
+                    
+                    if (!response.ok) {
+                        // Throw the error with the helpful message
+                        throw new Error(`HTTP error! Status: ${response.status}. This usually means the entire Google Sheet is not set to 'Anyone with the link' (Viewer).`);
+                    }
+                    
+                    const rawData = await response.text();
+                    
+                    // --- STEP 1: CLEAN THE DATA AGGRESSIVELY ---
+                    // This strips anything that isn't a digit (0-9) or a decimal point (.).
+                    // Note: GVIZ data might include headers, so we only take the relevant part.
+                    const lines = rawData.trim().split('\n');
+                    const valueLine = lines.length > 1 ? lines[1] : lines[0]; // Take the second line if there's a header, otherwise the first.
+                    
+                    const cleanedData = valueLine.trim().replace(/[^\d.]/g, ''); 
+                    
+                    // --- DEBUGGING STEP: Check what data is returned ---
+                    console.log("Raw data from sheet (GVIZ):", rawData.trim());
+                    console.log("Cleaned data for parsing:", cleanedData);
+                    // ---------------------------------------------------
+                    
+                    // STEP 2: Parse the cleaned string
+                    const currentTotal = parseFloat(cleanedData) || 0; 
+                    
+                    // If parsing failed (e.g., if the cell contains text), currentTotal will be 0.
+                    if (isNaN(currentTotal) || cleanedData.length === 0) {
+                        throw new Error("Data format error: Sheet did not return a valid number. Ensure the cell contains only a numerical value in the SUM cell.");
+                    }
+                    
+                    // Hide error notice if fetch and parsing succeeded
+                    configNoticeEl.classList.add('hidden');
+                    
+                    updateThermometer(currentTotal);
+
+                } catch (error) {
+                    console.error("Failed to fetch or parse data:", error);
+                    configNoticeEl.classList.remove('hidden');
+                    errorMessageEl.textContent = `Data fetch failed. Check console for error details. Cause: ${error.message}`;
+                    statusMessageEl.textContent = `Error: Data fetch failed.`;
+                    statusMessageEl.classList.add('text-red-500');
+                }
+            }
+            
+            /**
+             * Updates the visual and text elements of the thermometer.
+             * @param {number} currentTotal 
+             */
+            function updateThermometer(currentTotal) {
+                const percentage = Math.min(100, (currentTotal / GOAL) * 100);
+                
+                // 1. Update Progress Bar
+                progressBar.style.width = `${percentage}%`;
+                
+                // 2. Update Text Totals
+                currentTotalEl.textContent = formatCurrency(currentTotal);
+
+                // 3. Update Percentage Text
+                percentageTextEl.textContent = `${Math.round(percentage)}% Reached`;
+                percentageTextEl.classList.toggle('text-green-700', percentage >= 100);
+                percentageTextEl.classList.toggle('text-indigo-700', percentage < 100);
+
+                // 4. Update Status Message
+                if (currentTotal >= GOAL) {
+                    const excess = currentTotal - GOAL;
+                    statusMessageEl.textContent = `Goal exceeded by ${formatCurrency(excess)}! Keep it up!`;
+                    statusMessageEl.classList.remove('text-gray-600');
+                    statusMessageEl.classList.add('text-green-600', 'font-bold');
+                    progressBar.classList.remove('bg-indigo-500');
+                    progressBar.classList.add('bg-green-500');
+                } else {
+                    statusMessageEl.textContent = `Still need ${formatCurrency(GOAL - currentTotal)} to hit the goal!`;
+                    statusMessageEl.classList.add('text-gray-600');
+                    statusMessageEl.classList.remove('text-green-600', 'font-bold');
+                    progressBar.classList.add('bg-indigo-500');
+                    progressBar.classList.remove('bg-green-500');
+                }
+
+                // 5. Update Timestamp
+                const now = new Date();
+                lastUpdateEl.textContent = `Last update: ${now.toLocaleTimeString()}`;
+            }
+
+            // --- EXECUTION ---
+
+            // Fetch data immediately on load
+            fetchData(); 
+
+            // Set up the interval for live updating
+            setInterval(fetchData, UPDATE_INTERVAL);
+        })(); // End of IIFE
+
+    </script>
+</body>
+</html>
